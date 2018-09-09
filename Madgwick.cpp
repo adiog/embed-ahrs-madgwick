@@ -1,58 +1,51 @@
-//=====================================================================================================
-// MadgwickAHRS.c
-//=====================================================================================================
-//
-// Implementation of Madgwick's IMU and AHRS algorithms.
-// See: http://www.x-io.co.uk/node/8#open_source_ahrs_and_imu_algorithms
-//
-// Date			Author          Notes
-// 29/09/2011	SOH Madgwick    Initial release
-// 02/10/2011	SOH Madgwick	Optimised for reduced CPU load
-// 19/02/2012	SOH Madgwick	Magnetometer measurement is normalised
-//
-//=====================================================================================================
+// This file is a part of embed-sensor-fusion project.
+// Copyright 2018 Aleksander Gajewski <adiog@brainfuck.pl>.
 
-//---------------------------------------------------------------------------------------------------
-// Header files
-
-#include "MadgwickAHRS.h"
+#include "Madgwick.h"
 #include <math.h>
 
-//---------------------------------------------------------------------------------------------------
-// Definitions
+#include <SensorFusion.h>
+#include <TimeDelta.h>
 
-#define sampleFreq 512.0f  // sample frequency in Hz
-#define betaDef 0.1f       // 2 * proportional gain
 
-//---------------------------------------------------------------------------------------------------
-// Variable definitions
-
-volatile float beta = betaDef;                              // 2 * proportional gain (Kp)
-volatile float q0 = 1.0f, q1 = 0.0f, q2 = 0.0f, q3 = 0.0f;  // quaternion of sensor frame relative to auxiliary frame
-
-//---------------------------------------------------------------------------------------------------
-// Function declarations
-
-float invSqrt(float x);
-
-//====================================================================================================
-// Functions
-
-//---------------------------------------------------------------------------------------------------
-// AHRS algorithm update
-
-void MadgwickAHRSupdate(float gx, float gy, float gz, float ax, float ay, float az, float mx, float my, float mz)
+namespace {
+// Fast inverse square-root
+// See: http://en.wikipedia.org/wiki/Fast_inverse_square_root
+using Float = sensorFusion::SensorFusion::Float;
+Float invSqrt(Float x)
 {
-    float recipNorm;
-    float s0, s1, s2, s3;
-    float qDot1, qDot2, qDot3, qDot4;
-    float hx, hy;
-    float _2q0mx, _2q0my, _2q0mz, _2q1mx, _2bx, _2bz, _4bx, _4bz, _2q0, _2q1, _2q2, _2q3, _2q0q2, _2q2q3, q0q0, q0q1, q0q2, q0q3, q1q1, q1q2, q1q3, q2q2, q2q3, q3q3;
+    Float halfx = 0.5f * x;
+    Float y = x;
+    long i = *(long *)&y;
+    i = 0x5f3759df - (i >> 1);
+    y = *(float *)&i;
+    y = y * (1.5f - (halfx * y * y));
+    return y;
+}
+}
+
+namespace sensorFusion {
+void Madgwick::update(const sensorFusion::SensorData &sensorData)
+{
+    Float gx = sensorData.gyroscope[0];
+    Float gy = sensorData.gyroscope[1];
+    Float gz = sensorData.gyroscope[2];
+    Float ax = sensorData.accelerometer[0];
+    Float ay = sensorData.accelerometer[1];
+    Float az = sensorData.accelerometer[2];
+    Float mx = sensorData.magnetometer[0];
+    Float my = sensorData.magnetometer[1];
+    Float mz = sensorData.magnetometer[2];
+    Float recipNorm;
+    Float s0, s1, s2, s3;
+    Float qDot1, qDot2, qDot3, qDot4;
+    Float hx, hy;
+    Float _2q0mx, _2q0my, _2q0mz, _2q1mx, _2bx, _2bz, _4bx, _4bz, _2q0, _2q1, _2q2, _2q3, _2q0q2, _2q2q3, q0q0, q0q1, q0q2, q0q3, q1q1, q1q2, q1q3, q2q2, q2q3, q3q3;
 
     // Use IMU algorithm if magnetometer measurement invalid (avoids NaN in magnetometer normalisation)
     if ((mx == 0.0f) && (my == 0.0f) && (mz == 0.0f))
     {
-        MadgwickAHRSupdateIMU(gx, gy, gz, ax, ay, az);
+        updateImu(sensorData);
         return;
     }
 
@@ -142,12 +135,18 @@ void MadgwickAHRSupdate(float gx, float gy, float gz, float ax, float ay, float 
 //---------------------------------------------------------------------------------------------------
 // IMU algorithm update
 
-void MadgwickAHRSupdateIMU(float gx, float gy, float gz, float ax, float ay, float az)
+void Madgwick::updateImu(const sensorFusion::SensorData &sensorData)
 {
-    float recipNorm;
-    float s0, s1, s2, s3;
-    float qDot1, qDot2, qDot3, qDot4;
-    float _2q0, _2q1, _2q2, _2q3, _4q0, _4q1, _4q2, _8q1, _8q2, q0q0, q1q1, q2q2, q3q3;
+    Float gx = sensorData.gyroscope[0];
+    Float gy = sensorData.gyroscope[1];
+    Float gz = sensorData.gyroscope[2];
+    Float ax = sensorData.accelerometer[0];
+    Float ay = sensorData.accelerometer[1];
+    Float az = sensorData.accelerometer[2];
+    Float recipNorm;
+    Float s0, s1, s2, s3;
+    Float qDot1, qDot2, qDot3, qDot4;
+    Float _2q0, _2q1, _2q2, _2q3, _4q0, _4q1, _4q2, _8q1, _8q2, q0q0, q1q1, q2q2, q3q3;
 
     // Rate of change of quaternion from gyroscope
     qDot1 = 0.5f * (-q1 * gx - q2 * gy - q3 * gz);
@@ -211,19 +210,12 @@ void MadgwickAHRSupdateIMU(float gx, float gy, float gz, float ax, float ay, flo
     q3 *= recipNorm;
 }
 
-//---------------------------------------------------------------------------------------------------
-// Fast inverse square-root
-// See: http://en.wikipedia.org/wiki/Fast_inverse_square_root
-
-float invSqrt(float x)
+void Madgwick::computeAngles()
 {
-    float halfx = 0.5f * x;
-    float y = x;
-    long i = *(long*)&y;
-    i = 0x5f3759df - (i >> 1);
-    y = *(float*)&i;
-    y = y * (1.5f - (halfx * y * y));
-    return y;
+    roll = atan2f(q0 * q1 + q2 * q3, 0.5f - q1 * q1 - q2 * q2);
+    pitch = asinf(-2.0f * (q1 * q3 - q0 * q2));
+    yaw = atan2f(q1 * q2 + q0 * q3, 0.5f - q2 * q2 - q3 * q3);
+}
 }
 
 //====================================================================================================
