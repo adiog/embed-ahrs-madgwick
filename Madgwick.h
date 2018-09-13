@@ -20,7 +20,7 @@ struct Madgwick : public SensorFusion
     {
         update(sensorData);
         computeAngles();
-        return FusionData{{yaw, pitch, roll, 0}};
+        return FusionData{{yaw, pitch, roll}};
     }
 
     Float beta = betaDef;                              // 2 * proportional gain (Kp)
